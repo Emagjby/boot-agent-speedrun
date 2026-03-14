@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 
 import google.genai.types as types
 from dotenv import load_dotenv
@@ -39,21 +40,16 @@ def parse_args() -> tuple[str, bool]:
     return args.user_prompt, (True if args.verbose else False)
 
 
-def prompt(api_key: str, user_prompt: str) -> GenerateContentResponse:
-    message = [Content(role="user", parts=[Part(text=user_prompt)])]
-
-    client = genai.Client(api_key=api_key)
-    res = client.models.generate_content(
+def prompt(client: genai.Client, messages: list[Content]) -> GenerateContentResponse:
+    return client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=message,
+        contents=messages,
         config=types.GenerateContentConfig(
             tools=[AVAILABLE_FUNCTIONS],
             system_instruction=SYSTEM_PROMPT,
             temperature=0,
         ),
     )
-
-    return res
 
 
 def print_verbose(res: GenerateContentResponse, user_prompt: str):
@@ -74,23 +70,66 @@ def print_verbose(res: GenerateContentResponse, user_prompt: str):
     print_token_usage()
 
 
-def print_response(res: GenerateContentResponse, verbose=False, user_prompt=""):
-    if verbose:
-        print_verbose(res, user_prompt)
+def _get_candidate_contents(res: GenerateContentResponse) -> list[Content]:
+    if not res.candidates:
+        return []
 
-    parts = _get_content_parts(res)
-    if not parts:
-        print("")
+    contents = []
+    for candidate in res.candidates:
+        if candidate.content is not None:
+            contents.append(candidate.content)
+
+    return contents
+
+
+def _get_function_calls(res: GenerateContentResponse):
+    function_calls = []
+
+    for content in _get_candidate_contents(res):
+        for part in content.parts or []:
+            if part.function_call:
+                function_calls.append(part.function_call)
+
+    return function_calls
+
+
+def _print_text_response(res: GenerateContentResponse):
+    response_text = (res.text or "").strip()
+    if response_text:
+        print(response_text)
         return
 
-    for part in parts:
-        if part.text:
-            print(part.text)
+    for content in _get_candidate_contents(res):
+        for part in content.parts or []:
+            if part.text:
+                print(part.text)
 
-    function_results = []
-    for part in parts:
-        if part.function_call:
-            function_call_result = call_function(part.function_call, verbose=verbose)
+
+def main():
+    api_key = load_api_key()
+    user_prompt, verbose = parse_args()
+    client = genai.Client(api_key=api_key)
+    messages = [Content(role="user", parts=[Part(text=user_prompt)])]
+
+    for _ in range(20):
+        res = prompt(client, messages)
+
+        if verbose:
+            print_verbose(res, user_prompt)
+
+        candidate_contents = _get_candidate_contents(res)
+        for content in candidate_contents:
+            messages.append(content)
+
+        function_calls = _get_function_calls(res)
+        if not function_calls:
+            print("Final response:")
+            _print_text_response(res)
+            return
+
+        function_responses = []
+        for function_call in function_calls:
+            function_call_result = call_function(function_call, verbose=verbose)
 
             if not function_call_result.parts:
                 raise Exception("Function call result has no parts")
@@ -102,29 +141,14 @@ def print_response(res: GenerateContentResponse, verbose=False, user_prompt=""):
             if function_response.response is None:
                 raise Exception("Function response has no response payload")
 
-            function_results.append(function_call_result.parts[0])
+            function_responses.append(function_call_result.parts[0])
             if verbose:
                 print(f"-> {function_response.response}")
 
+        messages.append(types.Content(role="user", parts=function_responses))
 
-def _get_content_parts(res: GenerateContentResponse):
-    if not res.candidates:
-        return []
-
-    content = res.candidates[0].content
-    if content is None:
-        return []
-
-    return content.parts or []
-
-
-def main():
-    api_key = load_api_key()
-    user_prompt, verbose = parse_args()
-
-    res = prompt(api_key, user_prompt)
-
-    print_response(res, verbose=verbose, user_prompt=user_prompt)
+    print("Error: maximum iteration limit reached before final response.")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
