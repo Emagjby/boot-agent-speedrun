@@ -14,7 +14,7 @@ def load_api_key():
     return api_key
 
 
-def parse_args() -> str:
+def parse_args() -> tuple[str, bool]:
     parser = argparse.ArgumentParser(description="Chatbot")
     _ = parser.add_argument(
         "user_prompt", type=str, help="The user's prompt to the chatbot"
@@ -62,12 +62,12 @@ def print_response(res: GenerateContentResponse):
 
 def main():
     api_key = load_api_key()
-    get_user_prompt, verbose = parse_args()
+    user_prompt, verbose = parse_args()
 
-    res = prompt(api_key, get_user_prompt)
+    res = prompt(api_key, user_prompt)
 
     if verbose:
-        print_verbose(res, get_user_prompt)
+        print_verbose(res, user_prompt)
 
     print_response(res)
 
