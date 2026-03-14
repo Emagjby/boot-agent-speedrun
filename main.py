@@ -1,9 +1,22 @@
 import argparse
 import os
 
+import google.genai.types as types
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import Content, GenerateContentResponse, Part
+
+from call_function import AVAILABLE_FUNCTIONS, call_function
+
+SYSTEM_PROMPT = """
+You are a helpful AI coding agent.
+
+When a user asks a question or makes a request, make a function call plan. You can perform the following operations:
+
+- List files and directories
+
+All paths you provide should be relative to the working directory. You do not need to specify the working directory in your function calls as it is automatically injected for security reasons.
+"""
 
 
 def load_api_key():
@@ -33,6 +46,11 @@ def prompt(api_key: str, user_prompt: str) -> GenerateContentResponse:
     res = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=message,
+        config=types.GenerateContentConfig(
+            tools=[AVAILABLE_FUNCTIONS],
+            system_instruction=SYSTEM_PROMPT,
+            temperature=0,
+        ),
     )
 
     return res
@@ -56,8 +74,48 @@ def print_verbose(res: GenerateContentResponse, user_prompt: str):
     print_token_usage()
 
 
-def print_response(res: GenerateContentResponse):
-    print(res.text)
+def print_response(res: GenerateContentResponse, verbose=False, user_prompt=""):
+    if verbose:
+        print_verbose(res, user_prompt)
+
+    parts = _get_content_parts(res)
+    if not parts:
+        print("")
+        return
+
+    for part in parts:
+        if part.text:
+            print(part.text)
+
+    function_results = []
+    for part in parts:
+        if part.function_call:
+            function_call_result = call_function(part.function_call, verbose=verbose)
+
+            if not function_call_result.parts:
+                raise Exception("Function call result has no parts")
+
+            function_response = function_call_result.parts[0].function_response
+            if function_response is None:
+                raise Exception("Function call result has no function_response")
+
+            if function_response.response is None:
+                raise Exception("Function response has no response payload")
+
+            function_results.append(function_call_result.parts[0])
+            if verbose:
+                print(f"-> {function_response.response}")
+
+
+def _get_content_parts(res: GenerateContentResponse):
+    if not res.candidates:
+        return []
+
+    content = res.candidates[0].content
+    if content is None:
+        return []
+
+    return content.parts or []
 
 
 def main():
@@ -66,10 +124,7 @@ def main():
 
     res = prompt(api_key, user_prompt)
 
-    if verbose:
-        print_verbose(res, user_prompt)
-
-    print_response(res)
+    print_response(res, verbose=verbose, user_prompt=user_prompt)
 
 
 if __name__ == "__main__":
